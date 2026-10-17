@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#6366f1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.json">
+<title>AI 任务助手</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+* { -webkit-tap-highlight-color: transparent; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+.chat-bubble { max-width: 85%; }
+.fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+.slide-up-enter-active { transition: all 0.3s ease; }
+.slide-up-enter-from { transform: translateY(20px); opacity: 0; }
+</style>
+</head>
+<body class="bg-gray-50">
+<div id="app">
+
+  <!-- ===== 聊天页 ===== -->
+  <div v-show="currentTab === 'chat'" class="flex flex-col h-screen">
+    <div class="bg-indigo-600 text-white px-4 py-3 flex items-center justify-between shrink-0">
+      <h1 class="text-lg font-bold">🤖 AI 任务助手</h1>
+      <button @click="clearChat" class="text-xs bg-white/20 px-2 py-1 rounded">清空</button>
+    </div>
+
+    <div ref="chatContainer" class="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+      <div v-if="messages.length === 0" class="text-center text-gray-400 mt-20">
+        <p class="text-4xl mb-3">👋</p>
+        <p class="text-sm">告诉我你要做什么，比如：</p>
+        <p class="text-sm mt-1 text-indigo-500">"明天要交数学作业，还有背英语单词"</p>
+      </div>
+
+      <div v-for="(msg, i) in messages" :key="i" :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
+        <div class="chat-bubble rounded-2xl px-4 py-2.5 text-sm leading-relaxed"
+             :class="msg.role === 'user' ? 'bg-indigo-600 text-white rounded-br-md' : 'bg-white text-gray-800 shadow-sm rounded-bl-md'">
+          <p style="white-space: pre-wrap">{{ msg.content }}</p>
+
+          <!-- 任务卡片 -->
+          <div v-if="msg.tasks \&\& msg.tasks.length" class="mt-3 space-y-2">
+            <div v-for="(task, ti) in msg.tasks" :key="ti"
+                 class="border rounded-xl p-3 bg-gray-50 text-gray-800">
+              <div class="flex items-start justify-between">
+                <div class="flex-1">
+                  <p class="font-semibold text-sm">{{ task.title }}</p>
+                  <div class="flex flex-wrap gap-1 mt-1.5">
+                    <span class="text-xs px-1.5 py-0.5 rounded-full"
+                          :class="priorityColor(task.priority)">{{ task.priority }}</span>
+                    <span class="text-xs px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">{{ task.category }}</span>
+                    <span class="text-xs px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600">⏱ {{ task.estimatedMinutes }}分钟</span>
+                  </div>
+                  <div v-if="task.subtasks \&\& task.subtasks.length" class="mt-2 space-y-0.5">
+                    <p v-for="(st, si) in task.subtasks" :key="si" class="text-xs text-gray-500">• {{ st }}</p>
+                  </div>
+                  <p v-if="task.suggestedStart" class="text-xs text-gray-400 mt-1">
+                    建议：{{ formatTime(task.suggestedStart) }}
+                  </p>
+                </div>
+              </div>
+              <div class="flex gap-2 mt-2">
+                <button @click="confirmTask(task, i, ti)"
+                        :disabled="task._confirmed"
+                        class="flex-1 text-xs py-1.5 rounded-lg font-medium"
+                        :class="task._confirmed ? 'bg-green-100 text-green-600' : 'bg-indigo-600 text-white'">
+                  {{ task._confirmed ? '✅ 已加入清单' : '确认' }}
+                </button>
+                <button @click="startPomodoroForTask(task)"
+                        class="flex-1 text-xs py-1.5 rounded-lg bg-orange-100 text-orange-600 font-medium">
+                  🍅 番茄钟
+                </button>
+                <button @click="ignoreTask(i, ti)"
+                        class="text-xs py-1.5 px-3 rounded-lg bg-gray-100 text-gray-500">
+                  忽略
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="loading" class="flex justify-start">
+        <div class="bg-white rounded-2xl px-4 py-3 shadow-sm">
+          <div class="flex gap-1">
+            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay:0.1s"></div>
+            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay:0.2s"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 输入区 -->
+    <div class="bg-white border-t px-3 py-2 shrink-0 safe-area-bottom">
+      <div class="flex items-end gap-2">
+        <button v-if="!isRecording" @click="startRecording"
+                class="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-lg shrink-0">
+          🎤
+        </button>
+        <button v-else @click="stopRecording"
+                class="w-10 h-10 rounded-full bg-red-500 flex items-center justify-center text-lg shrink-0 animate-pulse">
+          ⏹
+        </button>
+        <textarea v-model="inputText" @keydown.enter.exact.prevent="sendMessage"
+                  placeholder="输入你的任务..."
+                  rows="1"
+                  class="flex-1 resize-none rounded-2xl border-gray-200 border px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
+                  style="max-height:100px"></textarea>
+        <button @click="sendMessage" :disabled="!inputText.trim() || loading"
+                class="w-10 h-10 rounded-full bg-indigo-600 text-white flex items-center justify-center shrink-0 disabled:opacity-40">
+          ➤
+        </button>
+      </div>
+      <p v-if="isRecording" class="text-xs text-red-500 text-center mt-1">🎙️ 正在录音，点击红色按钮停止</p>
+    </div>
+  </div>
+
+  <!-- ===== 任务页 ===== -->
+  <div v-show="currentTab === 'tasks'" class="flex flex-col h-screen">
+    <div class="bg-indigo-600 text-white px-4 py-3 shrink-0">
+      <h1 class="text-lg font-bold">✅ 任务清单</h1>
+      <p class="text-xs opacity-75">共 {{ tasks.length }} 个任务</p>
+    </div>
+
+    <div class="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+      <div v-if="tasks.length === 0" class="text-center text-gray-400 mt-20">
+        <p class="text-4xl mb-3">📝</p>
+        <p class="text-sm">还没有任务</p>
+        <p class="text-xs mt-1">去聊天页告诉 AI 你要做什么吧</p>
+      </div>
+
+      <div v-for="(group, cat) in tasksByCategory" :key="cat" class="space-y-2">
+        <h3 class="text-xs font-bold text-gray-500 uppercase tracking-wider">{{ cat }}（{{ group.length }}）</h3>
+        <div v-for="task in group" :key="task.id"
+             class="bg-white rounded-xl p-3 shadow-sm border"
+             :class="task.status === 'done' ? 'opacity-50' : ''">
+          <div class="flex items-start gap-2">
+            <button @click="toggleTaskDone(task)"
+                    class="mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0"
+                    :class="task.status === 'done' ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300'">
+              <span v-if="task.status === 'done'" class="text-xs">✓</span>
+            </button>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium" :class="task.status === 'done' ? 'line-through text-gray-400' : ''">{{ task.title }}</p>
+              <div class="flex flex-wrap gap-1 mt-1">
+                <span class="text-xs px-1.5 py-0.5 rounded-full" :class="priorityColor(task.priority)">{{ task.priority }}</span>
+                <span class="text-xs px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600">⏱{{ task.estimatedMinutes }}min</span>
+              </div>
+              <div v-if="task.subtasks \&\& task.subtasks.length" class="mt-1.5 space-y-0.5">
+                <p v-for="(st, si) in task.subtasks" :key="si" class="text-xs text-gray-500">• {{ st }}</p>
+              </div>
+            </div>
+            <button @click="deleteTask(task.id)" class="text-gray-300 hover:text-red-500 shrink-0 text-lg">×</button>
+          </div>
+          <button @click="startPomodoroForTask(task)"
+                  class="mt-2 w-full text-xs py-1.5 rounded-lg bg-orange-100 text-orange-600 font-medium">
+            🍅 开始番茄钟
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 日历页 ===== -->
+  <div v-show="currentTab === 'calendar'" class="flex flex-col h-screen">
+    <div class="bg-indigo-600 text-white px-4 py-3 shrink-0">
+      <h1 class="text-lg font-bold">📅 日历</h1>
+    </div>
+    <div class="flex-1 overflow-y-auto px-4 py-3">
+      <div v-if="calendarTasks.length === 0" class="text-center text-gray-400 mt-20">
+        <p class="text-4xl mb-3">📅</p>
+        <p class="text-sm">暂无日程安排</p>
+      </div>
+      <div v-for="(dayTasks, date) in calendarTasks" :key="date" class="mb-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-2">{{ date }}</h3>
+        <div class="space-y-2">
+          <div v-for="task in dayTasks" :key="task.id"
+               class="bg-white rounded-xl p-3 shadow-sm border-l-4 border-indigo-400">
+            <p class="text-sm font-medium">{{ task.title }}</p>
+            <p class="text-xs text-gray-400 mt-0.5">
+              {{ formatTime(task.suggestedStart) }} - {{ formatTime(task.suggestedEnd) }}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 工具页 ===== -->
+  <div v-show="currentTab === 'tools'" class="flex flex-col h-screen">
+    <div class="bg-indigo-600 text-white px-4 py-3 shrink-0">
+      <h1 class="text-lg font-bold">⚙️ 工具</h1>
+    </div>
+    <div class="flex-1 overflow-y-auto px-4 py-4 space-y-4 pb-24">
+
+      <!-- 番茄钟 -->
+      <div class="bg-white rounded-2xl p-5 shadow-sm">
+        <h2 class="text-sm font-bold text-gray-700 mb-3">🍅 番茄钟</h2>
+        <div class="text-center">
+          <p class="text-5xl font-mono font-bold text-indigo-600">{{ pomodoro.display }}</p>
+          <p class="text-xs text-gray-400 mt-1">
+            {{ pomodoro.running ? '专注中' : pomodoro.phase === 'break' ? '休息中' : '待开始' }}
+            <span v-if="pomodoro.taskTitle"> · {{ pomodoro.taskTitle }}</span>
+          </p>
+          <div class="flex justify-center gap-3 mt-4">
+            <button v-if="!pomodoro.running" @click="startPomodoro()"
+                    class="px-6 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-medium">开始专注</button>
+            <button v-else @click="pausePomodoro()"
+                    class="px-6 py-2.5 rounded-xl bg-yellow-500 text-white text-sm font-medium">暂停</button>
+            <button @click="resetPomodoro()"
+                    class="px-6 py-2.5 rounded-xl bg-gray-200 text-gray-600 text-sm font-medium">重置</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 专注统计 -->
+      <div class="bg-white rounded-2xl p-5 shadow-sm">
+        <h2 class="text-sm font-bold text-gray-700 mb-3">📊 专注统计</h2>
+        <div class="grid grid-cols-3 gap-3 text-center">
+          <div>
+            <p class="text-2xl font-bold text-indigo-600">{{ stats.todayPomodoros }}</p>
+            <p class="text-xs text-gray-400">今日番茄</p>
+          </div>
+          <div>
+            <p class="text-2xl font-bold text-indigo-600">{{ stats.todayMinutes }}</p>
+            <p class="text-xs text-gray-400">今日分钟</p>
+          </div>
+          <div>
+            <p class="text-2xl font-bold text-indigo-600">{{ stats.streak }}</p>
+            <p class="text-xs text-gray-400">连续天数</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 设置 -->
+      <div class="bg-white rounded-2xl p-5 shadow-sm space-y-3">
+        <h2 class="text-sm font-bold text-gray-700">🔧 设置</h2>
+
+        <div>
+          <label class="text-xs text-gray-500">API Key</label>
+          <input v-model="settings.apiKey" type="password" placeholder="粘贴你的 API Key"
+                 class="w-full mt-1 rounded-lg border-gray-200 border px-3 py-2 text-sm focus:outline-none focus:border-indigo-400">
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">API 地址（接口地址）</label>
+          <input v-model="settings.baseUrl" type="text"
+                 class="w-full mt-1 rounded-lg border-gray-200 border px-3 py-2 text-sm focus:outline-none focus:border-indigo-400">
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">模型名称</label>
+          <select v-model="settings.model"
+                  class="w-full mt-1 rounded-lg border-gray-200 border px-3 py-2 text-sm focus:outline-none focus:border-indigo-400">
+            <option value="glm-4-flash">glm-4-flash（智谱，免费）</option>
+            <option value="Qwen/Qwen2.5-7B-Instruct">Qwen2.5-7B（硅基流动，免费）</option>
+            <option value="qwen-turbo">qwen-turbo（通义千问）</option>
+            <option value="deepseek-chat">deepseek-chat（DeepSeek）</option>
+          </select>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-gray-500">专注时长（分钟）</label>
+            <input v-model.number="settings.focusMinutes" type="number" min="1"
+                   class="w-full mt-1 rounded-lg border-gray-200 border px-3 py-2 text-sm focus:outline-none">
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">休息时长（分钟）</label>
+            <input v-model.number="settings.breakMinutes" type="number" min="1"
+                   class="w-full mt-1 rounded-lg border-gray-200 border px-3 py-2 text-sm focus:outline-none">
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">空闲时间段（AI 排程参考）</label>
+          <input v-model="settings.freeTime" type="text" placeholder="如：19:00-22:00"
+                 class="w-full mt-1 rounded-lg border-gray-200 border px-3 py-2 text-sm focus:outline-none">
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">精力高峰</label>
+          <select v-model="settings.energyPeak"
+                  class="w-full mt-1 rounded-lg border-gray-200 border px-3 py-2 text-sm focus:outline-none">
+            <option value="morning">上午（8:00-12:00）</option>
+            <option value="afternoon">下午（14:00-18:00）</option>
+            <option value="evening">晚上（19:00-22:00）</option>
+          </select>
+        </div>
+
+        <button @click="saveSettings"
+                class="w-full py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-medium">
+          保存设置
+        </button>
+        <p v-if="settingsSaved" class="text-xs text-green-500 text-center">✅ 已保存</p>
+      </div>
+
+      <div class="bg-white rounded-2xl p-5 shadow-sm">
+        <h2 class="text-sm font-bold text-gray-700 mb-2">📱 添加到手机主屏幕</h2>
+        <p class="text-xs text-gray-500 leading-relaxed">
+          安卓 Chrome：右上角菜单 → “添加到主屏幕”<br>
+          iPhone Safari：底部分享按钮 → “添加到主屏幕”
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 悬浮迷你窗口 ===== -->
+  <div v-if="pomodoro.running" @click="currentTab = 'tools'"
+       class="fixed bottom-20 right-4 z-50 bg-indigo-600 text-white rounded-2xl px-4 py-2.5 shadow-lg flex items-center gap-2">
+    <span class="text-lg">🍅</span>
+    <span class="font-mono font-bold">{{ pomodoro.display }}</span>
+  </div>
+
+  <!-- ===== 底部导航 ===== -->
+  <div class="fixed bottom-0 left-0 right-0 bg-white border-t flex z-40 safe-area-bottom">
+    <button v-for="tab in tabs" :key="tab.key" @click="currentTab = tab.key"
+            class="flex-1 py-2.5 flex flex-col items-center gap-0.5"
+            :class="currentTab === tab.key ? 'text-indigo-600' : 'text-gray-400'">
+      <span class="text-lg">{{ tab.icon }}</span>
+      <span class="text-xs">{{ tab.label }}</span>
+    </button>
+  </div>
+
+</div>
+
+<script>
+const { createApp, ref, reactive, computed, onMounted, watch, nextTick } = Vue;
+
+const SYSTEM_PROMPT = `你是一个智能任务整理助手。用户会用日常语言告诉你他要做的事情，你需要：
+
+1. 提取所有待办任务
+2. 自动分类（学习/生活/健康/工作/社交/娱乐/其他）
+3. 估算每个任务需要多少分钟
+4. 判断优先级（重要且紧急 / 重要不紧急 / 紧急不重要 / 不重要不紧急）
+5. 建议执行时间
+6. 拆解大任务为子任务
+
+你必须返回严格的 JSON 格式，不要加任何其他文字：
+{
+  "reply": "用中文回复用户，说明你整理了哪些任务",
+  "tasks": [
+    {
+      "id": "临时id",
+      "title": "任务标题",
+      "description": "",
+      "category": "学习",
+      "priority": "重要且紧急",
+      "estimatedMinutes": 60,
+      "deadline": "2026-10-17T22:00:00",
+      "suggestedStart": "2026-10-16T19:00:00",
+      "suggestedEnd": "2026-10-16T20:00:00",
+      "subtasks": ["子任务1", "子任务2"]
+    }
+  ],
+  "needConfirm": true
+}
+
+如果用户只是闲聊，tasks 为空数组。
+如果用户要求修改已有任务，修改后重新返回。
+今天的日期是：${new Date().toISOString().split('T')[0]}`;
+
+createApp({
+  setup() {
+    // ===== 状态 =====
+    const currentTab = ref('chat');
+    const messages = ref([]);
+    const inputText = ref('');
+    const loading = ref(false);
+    const isRecording = ref(false);
+    const tasks = ref([]);
+    const chatContainer = ref(null);
+    const settingsSaved = ref(false);
+    const recognition = ref(null);
+
+    const tabs = [
+      { key: 'chat', icon: '💬', label: '聊天' },
+      { key: 'tasks', icon: '✅', label: '任务' },
+      { key: 'calendar', icon: '📅', label: '日历' },
+      { key: 'tools', icon: '⚙️', label: '工具' },
+    ];
+
+    const settings = reactive({
+      apiKey: '',
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
+      model: 'glm-4-flash',
+      focusMinutes: 25,
+      breakMinutes: 5,
+      freeTime: '19:00-22:00',
+      energyPeak: 'evening',
+    });
+
+    const pomodoro = reactive({
+      running: false,
+      phase: 'focus',
+      seconds: 25 * 60,
+      display: '25:00',
+      taskTitle: '',
+      timer: null,
+    });
+
+    const stats = reactive({
+      todayPomodoros: 0,
+      todayMinutes: 0,
+      streak: 0,
+    });
+
+    // ===== 计算属性 =====
+    const tasksByCategory = computed(() => {
+      const groups = {};
+      tasks.value.forEach(t => {
+        const cat = t.category || '其他';
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push(t);
+      });
+      return groups;
+    });
+
+    const calendarTasks = computed(() => {
+      const days = {};
+      tasks.value.filter(t => t.suggestedStart).forEach(t => {
+        const d = t.suggestedStart.split('T')[0];
+        if (!days[d]) days[d] = [];
+        days[d].push(t);
+      });
+      return days;
+    });
+
+    // ===== 工具函数 =====
+    function formatTime(iso) {
+      if (!iso) return '';
+      try {
+        const d = new Date(iso);
+        return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+      } catch { return iso; }
+    }
+
+    function priorityColor(p) {
+      if (!p) return 'bg-gray-100 text-gray-600';
+      if (p.includes('紧急') && p.includes('重要') && !p.includes('不紧急') && !p.includes('不重要'))
+        return 'bg-red-100 text-red-700';
+      if (p.includes('重要') && p.includes('不紧急'))
+        return 'bg-yellow-100 text-yellow-700';
+      if (p.includes('紧急') && p.includes('不重要'))
+        return 'bg-blue-100 text-blue-700';
+      return 'bg-gray-100 text-gray-600';
+    }
+
+    function saveToStorage() {
+      localStorage.setItem('aitodo_tasks', JSON.stringify(tasks.value));
+      localStorage.setItem('aitodo_settings', JSON.stringify(settings));
+      localStorage.setItem('aitodo_stats', JSON.stringify(stats));
+      localStorage.setItem('aitodo_messages', JSON.stringify(messages.value.slice(-50)));
+    }
+
+    function loadFromStorage() {
+      try {
+        const t = localStorage.getItem('aitodo_tasks');
+        if (t) tasks.value = JSON.parse(t);
+        const s = localStorage.getItem('aitodo_settings');
+        if (s) Object.assign(settings, JSON.parse(s));
+        const st = localStorage.getItem('aitodo_stats');
+        if (st) Object.assign(stats, JSON.parse(st));
+        const m = localStorage.getItem('aitodo_messages');
+        if (m) messages.value = JSON.parse(m);
+      } catch(e) { console.warn('读取本地数据失败', e); }
+    }
+
+    // ===== AI 调用 =====
+    async function callAI(userMessage) {
+      if (!settings.apiKey) {
+        return {
+          reply: '⚠️ 请先到「工具」页面填写 API Key。\n\n推荐使用智谱 GLM-4-Flash（免费）：\n1. 访问 open.bigmodel.cn 注册\n2. 控制台 → API Keys → 创建\n3. 复制 Key 粘贴到设置里',
+          tasks: [],
+          needConfirm: false
+        };
+      }
+
+      const history = messages.value.slice(-6).map(m => ({
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content
+      }));
+
+      const body = {
+        model: settings.model,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          ...history,
+          { role: 'user', content: userMessage }
+        ],
+        temperature: 0.3,
+      };
+
+      const resp = await fetch(settings.baseUrl.replace(/\/$/, '') + '/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${settings.apiKey}`
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.text();
+        throw new Error(`API 错误 ${resp.status}: ${err.slice(0, 200)}`);
+      }
+
+      const data = await resp.json();
+      const content = data.choices[0].message.content;
+
+      // 尝试解析 JSON
+      try {
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.tasks) parsed.tasks.forEach(t => { t._confirmed = false; });
+          return parsed;
+        }
+      } catch(e) { /* 不是 JSON，当作普通回复 */ }
+
+      return { reply: content, tasks: [], needConfirm: false };
+    }
+
+    // ===== 发送消息 =====
+    async function sendMessage() {
+      const text = inputText.value.trim();
+      if (!text || loading.value) return;
+
+      messages.value.push({ role: 'user', content: text });
+      inputText.value = '';
+      loading.value = true;
+      await scrollToBottom();
+
+      try {
+        const result = await callAI(text);
+        messages.value.push({
+          role: 'assistant',
+          content: result.reply || '好的，我帮你整理了以下任务：',
+          tasks: result.tasks || [],
+        });
+      } catch(err) {
+        messages.value.push({
+          role: 'assistant',
+          content: `❌ 出错了：${err.message}\\n\\n请检查：\\n1. API Key 是否正确\\n2. 网络是否正常\\n3. API 地址是否填写正确`,
+          tasks: [],
+        });
+      }
+
+      loading.value = false;
+      saveToStorage();
+      await scrollToBottom();
+    }
+
+    async function scrollToBottom() {
+      await nextTick();
+      if (chatContainer.value) {
+        chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
+      }
+    }
+
+    // ===== 任务操作 =====
+    function confirmTask(task, msgIndex, taskIndex) {
+      const newTask = {
+        ...task,
+        id: 'task_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      };
+      delete newTask._confirmed;
+      tasks.value.push(newTask);
+      messages.value[msgIndex].tasks[taskIndex]._confirmed = true;
+      saveToStorage();
+    }
+
+    function ignoreTask(msgIndex, taskIndex) {
+      messages.value[msgIndex].tasks.splice(taskIndex, 1);
+      saveToStorage();
+    }
+
+    function toggleTaskDone(task) {
+      task.status = task.status === 'done' ? 'pending' : 'done';
+      saveToStorage();
+    }
+
+    function deleteTask(id) {
+      tasks.value = tasks.value.filter(t => t.id !== id);
+      saveToStorage();
+    }
+
+    function clearChat() {
+      messages.value = [];
+      saveToStorage();
+    }
+
+    // ===== 番茄钟 =====
+    function startPomodoroForTask(task) {
+      pomodoro.taskTitle = task.title;
+      pomodoro.phase = 'focus';
+      pomodoro.seconds = settings.focusMinutes * 60;
+      currentTab.value = 'tools';
+      startPomodoro();
+    }
+
+    function startPomodoro() {
+      if (pomodoro.running) return;
+      pomodoro.running = true;
+      pomodoro.timer = setInterval(() => {
+        pomodoro.seconds--;
+        updateDisplay();
+        if (pomodoro.seconds <= 0) {
+          clearInterval(pomodoro.timer);
+          pomodoro.running = false;
+          onPomodoroComplete();
+        }
+      }, 1000);
+    }
+
+    function pausePomodoro() {
+      pomodoro.running = false;
+      clearInterval(pomodoro.timer);
+    }
+
+    function resetPomodoro() {
+      clearInterval(pomodoro.timer);
+      pomodoro.running = false;
+      pomodoro.phase = 'focus';
+      pomodoro.seconds = settings.focusMinutes * 60;
+      pomodoro.taskTitle = '';
+      updateDisplay();
+    }
+
+    function updateDisplay() {
+      const m = Math.floor(pomodoro.seconds / 60);
+      const s = pomodoro.seconds % 60;
+      pomodoro.display = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    }
+
+    function onPomodoroComplete() {
+      if (pomodoro.phase === 'focus') {
+        stats.todayPomodoros++;
+        stats.todayMinutes += settings.focusMinutes;
+        saveToStorage();
+
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('🍅 番茄钟完成！', { body: '休息一下吧～' });
+        }
+
+        pomodoro.phase = 'break';
+        pomodoro.seconds = settings.breakMinutes * 60;
+        updateDisplay();
+        startPomodoro();
+      } else {
+        pomodoro.phase = 'focus';
+        pomodoro.seconds = settings.focusMinutes * 60;
+        pomodoro.taskTitle = '';
+        updateDisplay();
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('☕ 休息结束！', { body: '开始下一个专注吧～' });
+        }
+      }
+    }
+
+    // ===== 语音输入 =====
+    function startRecording() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        alert('你的浏览器不支持语音输入，请使用 Chrome 或 Edge 浏览器，或直接打字输入。');
+        return;
+      }
+
+      recognition.value = new SpeechRecognition();
+      recognition.value.lang = 'zh-CN';
+      recognition.value.continuous = true;
+      recognition.value.interimResults = false;
+
+      recognition.value.onresult = (event) => {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            inputText.value += event.results[i][0].transcript;
+          }
+        }
+      };
+
+      recognition.value.onerror = (e) => {
+        console.warn('语音识别错误', e.error);
+        isRecording.value = false;
+      };
+
+      recognition.value.onend = () => {
+        isRecording.value = false;
+      };
+
+      recognition.value.start();
+      isRecording.value = true;
+    }
+
+    function stopRecording() {
+      if (recognition.value) {
+        recognition.value.stop();
+        isRecording.value = false;
+      }
+    }
+
+    // ===== 设置 =====
+    function saveSettings() {
+      saveToStorage();
+      settingsSaved.value = true;
+      setTimeout(() => settingsSaved.value = false, 2000);
+    }
+
+    // ===== 初始化 =====
+    onMounted(() => {
+      loadFromStorage();
+      updateDisplay();
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+      }
+    });
+
+    watch([tasks, messages, settings, stats], () => saveToStorage(), { deep: true });
+
+    return {
+      currentTab, messages, inputText, loading, isRecording,
+      tasks, chatContainer, settings, settingsSaved, stats,
+      tabs, tasksByCategory, calendarTasks,
+      formatTime, priorityColor,
+      sendMessage, confirmTask, ignoreTask, toggleTaskDone, deleteTask, clearChat,
+      startPomodoroForTask, startPomodoro, pausePomodoro, resetPomodoro,
+      startRecording, stopRecording,
+      saveSettings,
+      pomodoro,
+    };
+  }
+}).mount('#app');
+</script>
+
+<style>
+.safe-area-bottom { padding-bottom: env(safe-area-inset-bottom, 0); }
+</style>
+</body>
+</html>
